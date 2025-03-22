@@ -12,6 +12,8 @@ import { WORK_DIR } from '~/utils/constants';
 import { createSummary } from '~/lib/.server/llm/create-summary';
 import { ensureString, extractPropertiesFromMessage } from '~/lib/.server/llm/utils';
 import { orchestrateAgents } from '~/lib/.server/agents';
+import { executeAgents, AgentImplementation } from '~/lib/.server/agents/factory';
+import { getAgentConfig } from '~/lib/.server/agents/config';
 
 export async function action(args: ActionFunctionArgs) {
   return chatAction(args);
@@ -189,17 +191,32 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
         } satisfies ProgressAnnotation);
 
         try {
-          // Run the multi-agent orchestration
-          const result = await orchestrateAgents({
+          // Get agent configuration
+          const agentConfig = getAgentConfig();
+          logger.debug(`Using agent implementation: ${agentConfig.implementation}`);
+          
+          // Ensure API keys are accessible
+          const enrichedEnv = {
+            ...(context.cloudflare?.env || {}),
+            ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+            OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+            GROQ_API_KEY: process.env.GROQ_API_KEY,
+            GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+            MISTRAL_API_KEY: process.env.MISTRAL_API_KEY,
+            // Add any other API keys your agents might need
+          };
+          
+          // Run the multi-agent orchestration with configured implementation
+          const result = await (executeAgents as any)({
             messages,
             files: filteredFiles || files,
-            env: context.cloudflare?.env,
+            env: enrichedEnv, // Use enriched environment
             apiKeys,
             providerSettings,
             promptId,
             contextOptimization,
             dataStream,
-          });
+          }, agentConfig.implementation);
 
           // Handle the result
           if (result) {
