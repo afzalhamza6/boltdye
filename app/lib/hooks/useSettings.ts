@@ -95,8 +95,21 @@ export function useSettings(): UseSettingsReturn {
 
   useEffect(() => {
     const active = Object.entries(providers)
-      .filter(([_key, provider]) => provider.settings.enabled)
-      .map(([_k, p]) => p);
+      .filter(([_, config]) => config.settings.enabled)
+      .map(([_, config]) => ({ ...config }));
+
+    // Ensure Ollama is always enabled if it exists in providers
+    const ollamaProvider = providers['Ollama'];
+    if (ollamaProvider && !ollamaProvider.settings.enabled) {
+      updateProviderSettingsStore('Ollama', {
+        ...ollamaProvider,
+        settings: {
+          ...ollamaProvider.settings,
+          enabled: true,
+          baseUrl: process.env.OLLAMA_API_BASE_URL || 'http://127.0.0.1:11434'
+        }
+      } as any);
+    }
 
     setActiveProviders(active);
   }, [providers]);

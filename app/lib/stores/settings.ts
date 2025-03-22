@@ -30,7 +30,7 @@ export interface Shortcuts {
 }
 
 export const URL_CONFIGURABLE_PROVIDERS = ['Ollama', 'LMStudio', 'OpenAILike'];
-export const LOCAL_PROVIDERS = ['OpenAILike', 'LMStudio', 'Ollama'];
+export const LOCAL_PROVIDERS = ['OpenAILike', 'LMStudio'];
 
 export type ProviderSetting = Record<string, IProviderConfig>;
 
@@ -71,8 +71,10 @@ const getInitialProviderSettings = (): ProviderSetting => {
     initialSettings[provider.name] = {
       ...provider,
       settings: {
-        // Local providers should be disabled by default
-        enabled: !LOCAL_PROVIDERS.includes(provider.name),
+        // Local providers should be disabled by default, EXCEPT Ollama
+        enabled: !LOCAL_PROVIDERS.includes(provider.name) || provider.name === 'Ollama',
+        // Ensure Ollama URL is set from env if available
+        baseUrl: provider.name === 'Ollama' ? process.env.OLLAMA_API_BASE_URL || 'http://127.0.0.1:11434' : undefined,
       },
     };
   });

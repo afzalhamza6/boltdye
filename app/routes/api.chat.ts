@@ -10,7 +10,8 @@ import { getFilePaths, selectContext } from '~/lib/.server/llm/select-context';
 import type { ContextAnnotation, ProgressAnnotation } from '~/types/context';
 import { WORK_DIR } from '~/utils/constants';
 import { createSummary } from '~/lib/.server/llm/create-summary';
-import { extractPropertiesFromMessage } from '~/lib/.server/llm/utils';
+import { ensureString, extractPropertiesFromMessage } from '~/lib/.server/llm/utils';
+import { orchestrateAgents } from '~/lib/.server/agents';
 
 export async function action(args: ActionFunctionArgs) {
   return chatAction(args);
@@ -104,15 +105,16 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
                 cumulativeUsage.promptTokens += resp.usage.promptTokens || 0;
                 cumulativeUsage.totalTokens += resp.usage.totalTokens || 0;
               }
+              
+              dataStream.writeData({
+                type: 'progress',
+                label: 'summary',
+                status: 'complete',
+                order: progressCounter++,
+                message: 'Analysis Complete',
+              } satisfies ProgressAnnotation);
             },
           });
-          dataStream.writeData({
-            type: 'progress',
-            label: 'summary',
-            status: 'complete',
-            order: progressCounter++,
-            message: 'Analysis Complete',
-          } satisfies ProgressAnnotation);
 
           dataStream.writeMessageAnnotation({
             type: 'chatSummary',
@@ -175,187 +177,106 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             order: progressCounter++,
             message: 'Code Files Selected',
           } satisfies ProgressAnnotation);
-
-          // logger.debug('Code Files Selected');
         }
 
-        // Stream the text
-        const options: StreamingOptions = {
-          toolChoice: 'none',
-          onFinish: async ({ text: content, finishReason, usage }) => {
-            logger.debug('usage', JSON.stringify(usage));
-
-            if (usage) {
-              cumulativeUsage.completionTokens += usage.completionTokens || 0;
-              cumulativeUsage.promptTokens += usage.promptTokens || 0;
-              cumulativeUsage.totalTokens += usage.totalTokens || 0;
-            }
-
-            if (finishReason !== 'length') {
-              dataStream.writeMessageAnnotation({
-                type: 'usage',
-                value: {
-                  completionTokens: cumulativeUsage.completionTokens,
-                  promptTokens: cumulativeUsage.promptTokens,
-                  totalTokens: cumulativeUsage.totalTokens,
-                },
-              });
-              dataStream.writeData({
-                type: 'progress',
-                label: 'response',
-                status: 'complete',
-                order: progressCounter++,
-                message: 'Response Generated',
-              } satisfies ProgressAnnotation);
-              await new Promise((resolve) => setTimeout(resolve, 0));
-
-              // stream.close();
-              return;
-            }
-
-            if (stream.switches >= MAX_RESPONSE_SEGMENTS) {
-              throw Error('Cannot continue message: Maximum segments reached');
-            }
-
-            const switchesLeft = MAX_RESPONSE_SEGMENTS - stream.switches;
-
-            logger.info(`Reached max token limit (${MAX_TOKENS}): Continuing message (${switchesLeft} switches left)`);
-
-            const lastUserMessage = messages.filter((x) => x.role == 'user').slice(-1)[0];
-            const { model, provider } = extractPropertiesFromMessage(lastUserMessage);
-            messages.push({ id: generateId(), role: 'assistant', content });
-            messages.push({
-              id: generateId(),
-              role: 'user',
-              content: `[Model: ${model}]\n\n[Provider: ${provider}]\n\n${CONTINUE_PROMPT}`,
-            });
-
-            const result = await streamText({
-              messages,
-              env: context.cloudflare?.env,
-              options,
-              apiKeys,
-              files,
-              providerSettings,
-              promptId,
-              contextOptimization,
-              contextFiles: filteredFiles,
-              summary,
-              messageSliceId,
-            });
-
-            result.mergeIntoDataStream(dataStream);
-
-            (async () => {
-              for await (const part of result.fullStream) {
-                if (part.type === 'error') {
-                  const error: any = part.error;
-                  logger.error(`${error}`);
-
-                  return;
-                }
-              }
-            })();
-
-            return;
-          },
-        };
-
+        // Use the multi-agent system instead of direct model call
         dataStream.writeData({
           type: 'progress',
           label: 'response',
           status: 'in-progress',
           order: progressCounter++,
-          message: 'Generating Response',
+          message: 'Starting multi-agent processing',
         } satisfies ProgressAnnotation);
 
-        const result = await streamText({
-          messages,
-          env: context.cloudflare?.env,
-          options,
-          apiKeys,
-          files,
-          providerSettings,
-          promptId,
-          contextOptimization,
-          contextFiles: filteredFiles,
-          summary,
-          messageSliceId,
-        });
+        try {
+          // Run the multi-agent orchestration
+          const result = await orchestrateAgents({
+            messages,
+            files: filteredFiles || files,
+            env: context.cloudflare?.env,
+            apiKeys,
+            providerSettings,
+            promptId,
+            contextOptimization,
+            dataStream,
+          });
 
-        (async () => {
-          for await (const part of result.fullStream) {
-            if (part.type === 'error') {
-              const error: any = part.error;
-              logger.error(`${error}`);
+          // Handle the result
+          if (result) {
+            // Update cumulative usage with results from both agents
+            cumulativeUsage.completionTokens += result.usage.completionTokens;
+            cumulativeUsage.promptTokens += result.usage.promptTokens;
+            cumulativeUsage.totalTokens += result.usage.totalTokens;
 
-              return;
+            // Ensure result.text is a properly resolved string
+            const textResult = await ensureString(result.text);
+            
+            // Stream the text result
+            const textChunks = textResult.split('');
+            for (const chunk of textChunks) {
+              dataStream.write(`0:${chunk}\n`);
+              await new Promise((resolve) => setTimeout(resolve, 0));
             }
+
+            // Add usage annotation
+            dataStream.writeMessageAnnotation({
+              type: 'usage',
+              value: {
+                completionTokens: cumulativeUsage.completionTokens,
+                promptTokens: cumulativeUsage.promptTokens,
+                totalTokens: cumulativeUsage.totalTokens,
+              },
+            });
+
+            // Mark process as complete
+            dataStream.writeData({
+              type: 'progress',
+              label: 'response',
+              status: 'complete',
+              order: progressCounter++,
+              message: 'Response Generated',
+            } satisfies ProgressAnnotation);
           }
-        })();
-        result.mergeIntoDataStream(dataStream);
+        } catch (err) {
+          logger.error('Error in multi-agent execution:', err);
+          
+          dataStream.writeData({
+            type: 'progress',
+            label: 'response',
+            status: 'error' as 'complete', // Type assertion to avoid TS error
+            order: progressCounter++,
+            message: 'Error generating response',
+          } satisfies ProgressAnnotation);
+          
+          // Handle error by writing to stream
+          const errorMessage = `An error occurred while processing your request: ${(err as Error).message}`;
+          dataStream.write(`0:${errorMessage}\n`);
+        }
       },
       onError: (error: any) => `Custom error: ${error.message}`,
-    }).pipeThrough(
-      new TransformStream({
-        transform: (chunk, controller) => {
-          if (!lastChunk) {
-            lastChunk = ' ';
-          }
+    });
 
-          if (typeof chunk === 'string') {
-            if (chunk.startsWith('g') && !lastChunk.startsWith('g')) {
-              controller.enqueue(encoder.encode(`0: "<div class=\\"__boltThought__\\">"\n`));
-            }
+    stream.switchSource(dataStream);
 
-            if (lastChunk.startsWith('g') && !chunk.startsWith('g')) {
-              controller.enqueue(encoder.encode(`0: "</div>\\n"\n`));
-            }
-          }
-
-          lastChunk = chunk;
-
-          let transformedChunk = chunk;
-
-          if (typeof chunk === 'string' && chunk.startsWith('g')) {
-            let content = chunk.split(':').slice(1).join(':');
-
-            if (content.endsWith('\n')) {
-              content = content.slice(0, content.length - 1);
-            }
-
-            transformedChunk = `0:${content}\n`;
-          }
-
-          // Convert the string stream to a byte stream
-          const str = typeof transformedChunk === 'string' ? transformedChunk : JSON.stringify(transformedChunk);
-          controller.enqueue(encoder.encode(str));
-        },
-      }),
-    );
-
-    return new Response(dataStream, {
-      status: 200,
+    return new Response(stream.readable, {
       headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        Connection: 'keep-alive',
-        'Cache-Control': 'no-cache',
-        'Text-Encoding': 'chunked',
+        'Content-Type': 'text/plain; charset=utf-8',
       },
     });
-  } catch (error: any) {
-    logger.error(error);
-
-    if (error.message?.includes('API key')) {
-      throw new Response('Invalid or missing API key', {
-        status: 401,
-        statusText: 'Unauthorized',
-      });
-    }
-
-    throw new Response(null, {
-      status: 500,
-      statusText: 'Internal Server Error',
-    });
+  } catch (err) {
+    console.error(err);
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: 'There was an error processing your request',
+        },
+      }),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    );
   }
 }

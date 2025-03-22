@@ -37,7 +37,44 @@ export default class OllamaProvider extends BaseProvider {
     baseUrlKey: 'OLLAMA_API_BASE_URL',
   };
 
-  staticModels: ModelInfo[] = [];
+  staticModels: ModelInfo[] = [
+    {
+      name: 'llama3',
+      label: 'Llama 3 (Local)',
+      provider: 'Ollama',
+      maxTokenAllowed: 4096,
+    },
+    {
+      name: 'llama3:8b',
+      label: 'Llama 3 8B (Low Memory)',
+      provider: 'Ollama',
+      maxTokenAllowed: 4096,
+    },
+    {
+      name: 'tinyllama',
+      label: 'TinyLlama (Ultra Low Memory)',
+      provider: 'Ollama',
+      maxTokenAllowed: 2048,
+    },
+    {
+      name: 'phi3:mini',
+      label: 'Phi-3 Mini (Low Memory)',
+      provider: 'Ollama',
+      maxTokenAllowed: 4096,
+    },
+    {
+      name: 'mistral',
+      label: 'Mistral (Low Memory)',
+      provider: 'Ollama',
+      maxTokenAllowed: 4096,
+    },
+    {
+      name: 'codellama',
+      label: 'Code Llama (Local)',
+      provider: 'Ollama',
+      maxTokenAllowed: 4096,
+    },
+  ];
 
   private _convertEnvToRecord(env?: Env): Record<string, string> {
     if (!env) {
@@ -56,7 +93,8 @@ export default class OllamaProvider extends BaseProvider {
 
   getDefaultNumCtx(serverEnv?: Env): number {
     const envRecord = this._convertEnvToRecord(serverEnv);
-    return envRecord.DEFAULT_NUM_CTX ? parseInt(envRecord.DEFAULT_NUM_CTX, 10) : 32768;
+    // Use a smaller default context window that works better with limited memory systems
+    return envRecord.DEFAULT_NUM_CTX ? parseInt(envRecord.DEFAULT_NUM_CTX, 10) : 4096;
   }
 
   async getDynamicModels(
@@ -93,8 +131,8 @@ export default class OllamaProvider extends BaseProvider {
     // console.log({ ollamamodels: data.models });
 
     return data.models.map((model: OllamaModel) => ({
-      name: model.name,
-      label: `${model.name} (${model.details.parameter_size})`,
+      name: model.name.replace(/:latest$/, ''),
+      label: `${model.name.replace(/:latest$/, '')} (${model.details.parameter_size})`,
       provider: this.name,
       maxTokenAllowed: 8000,
     }));
@@ -127,8 +165,12 @@ export default class OllamaProvider extends BaseProvider {
     baseUrl = isDocker ? baseUrl.replace('127.0.0.1', 'host.docker.internal') : baseUrl;
 
     logger.debug('Ollama Base Url used: ', baseUrl);
+    
+    // Strip the ":latest" suffix if present
+    const cleanModelName = model.replace(/:latest$/, '');
+    logger.debug(`Using Ollama model: ${cleanModelName} (original input: ${model})`);
 
-    const ollamaInstance = ollama(model, {
+    const ollamaInstance = ollama(cleanModelName, {
       numCtx: this.getDefaultNumCtx(serverEnv),
     }) as LanguageModelV1 & { config: any };
 

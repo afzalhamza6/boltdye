@@ -134,7 +134,17 @@ const getGitHubRepoContent = async (
       headers,
     });
 
+    // Handle rate limiting and other errors gracefully
     if (!response.ok) {
+      if (response.status === 403) {
+        console.warn('GitHub API rate limit exceeded. Using fallback empty template.');
+        // Return a minimal fallback structure instead of throwing an error
+        return [{
+          name: 'README.md',
+          path: 'README.md',
+          content: '# Rate Limited\nGitHub API rate limit was exceeded. Please try again later or use a GitHub token.'
+        }];
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
@@ -162,20 +172,41 @@ const getGitHubRepoContent = async (
           // Recursively get contents of subdirectories
           return await getGitHubRepoContent(repoName, item.path);
         } else if (item.type === 'file') {
-          // Fetch file content
-          const fileResponse = await fetch(item.url, {
-            headers,
-          });
-          const fileData: any = await fileResponse.json();
-          const content = atob(fileData.content); // Decode base64 content
+          // Fetch file content with rate limit handling
+          try {
+            const fileResponse = await fetch(item.url, {
+              headers,
+            });
+            
+            if (!fileResponse.ok) {
+              if (fileResponse.status === 403) {
+                return [{
+                  name: item.name,
+                  path: item.path,
+                  content: `// GitHub API rate limit exceeded. Content unavailable.\n// Path: ${item.path}`
+                }];
+              }
+              throw new Error(`HTTP error! status: ${fileResponse.status}`);
+            }
+            
+            const fileData: any = await fileResponse.json();
+            const content = atob(fileData.content); // Decode base64 content
 
-          return [
-            {
+            return [
+              {
+                name: item.name,
+                path: item.path,
+                content,
+              },
+            ];
+          } catch (fileError) {
+            console.warn(`Error fetching file ${item.path}:`, fileError);
+            return [{
               name: item.name,
               path: item.path,
-              content,
-            },
-          ];
+              content: `// Error fetching file content. Path: ${item.path}`
+            }];
+          }
         }
 
         return [];
@@ -186,7 +217,12 @@ const getGitHubRepoContent = async (
     return contents.flat();
   } catch (error) {
     console.error('Error fetching repo contents:', error);
-    throw error;
+    // Return a minimal template instead of throwing an error
+    return [{
+      name: 'error.txt',
+      path: 'error.txt',
+      content: `Error fetching template: ${error instanceof Error ? error.message : String(error)}`
+    }];
   }
 };
 

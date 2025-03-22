@@ -1,5 +1,5 @@
 import type { Message } from 'ai';
-import { Fragment } from 'react';
+import { Fragment, useState, useEffect } from 'react';
 import { classNames } from '~/utils/classNames';
 import { AssistantMessage } from './AssistantMessage';
 import { UserMessage } from './UserMessage';
@@ -12,19 +12,33 @@ import { useStore } from '@nanostores/react';
 import { profileStore } from '~/lib/stores/profile';
 import { forwardRef } from 'react';
 import type { ForwardedRef } from 'react';
+import { PromptComparison } from './PromptComparison';
 
 interface MessagesProps {
   id?: string;
   className?: string;
   isStreaming?: boolean;
   messages?: Message[];
+  data?: any[];
 }
 
 export const Messages = forwardRef<HTMLDivElement, MessagesProps>(
   (props: MessagesProps, ref: ForwardedRef<HTMLDivElement> | undefined) => {
-    const { id, isStreaming = false, messages = [] } = props;
+    const { id, isStreaming = false, messages = [], data = [] } = props;
     const location = useLocation();
     const profile = useStore(profileStore);
+    const [promptComparison, setPromptComparison] = useState<{ original: string, enhanced: string } | null>(null);
+
+    useEffect(() => {
+      // Find prompt comparison data from data stream
+      const comparisonData = data.find(item => item.type === 'prompt-comparison');
+      if (comparisonData) {
+        setPromptComparison({
+          original: comparisonData.original,
+          enhanced: comparisonData.enhanced
+        });
+      }
+    }, [data]);
 
     const handleRewind = (messageId: string) => {
       const searchParams = new URLSearchParams(location.search);
@@ -60,66 +74,78 @@ export const Messages = forwardRef<HTMLDivElement, MessagesProps>(
                 return <Fragment key={index} />;
               }
 
+              // Display prompt comparison after the first user message if available
+              const showPromptComparison = isUserMessage && isLast && promptComparison;
+
               return (
-                <div
-                  key={index}
-                  className={classNames('flex gap-4 p-6 w-full rounded-[calc(0.75rem-1px)]', {
-                    'bg-bolt-elements-messages-background': isUserMessage || !isStreaming || (isStreaming && !isLast),
-                    'bg-gradient-to-b from-bolt-elements-messages-background from-30% to-transparent':
-                      isStreaming && isLast,
-                    'mt-4': !isFirst,
-                  })}
-                >
-                  {isUserMessage && (
-                    <div className="flex items-center justify-center w-[40px] h-[40px] overflow-hidden bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-500 rounded-full shrink-0 self-start">
-                      {profile?.avatar ? (
-                        <img
-                          src={profile.avatar}
-                          alt={profile?.username || 'User'}
-                          className="w-full h-full object-cover"
-                          loading="eager"
-                          decoding="sync"
-                        />
+                <Fragment key={index}>
+                  <div
+                    className={classNames('flex gap-4 p-6 w-full rounded-[calc(0.75rem-1px)]', {
+                      'bg-bolt-elements-messages-background': isUserMessage || !isStreaming || (isStreaming && !isLast),
+                      'bg-gradient-to-b from-bolt-elements-messages-background from-30% to-transparent':
+                        isStreaming && isLast,
+                      'mt-4': !isFirst,
+                    })}
+                  >
+                    {isUserMessage && (
+                      <div className="flex items-center justify-center w-[40px] h-[40px] overflow-hidden bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-500 rounded-full shrink-0 self-start">
+                        {profile?.avatar ? (
+                          <img
+                            src={profile.avatar}
+                            alt={profile?.username || 'User'}
+                            className="w-full h-full object-cover"
+                            loading="eager"
+                            decoding="sync"
+                          />
+                        ) : (
+                          <div className="i-ph:user-fill text-2xl" />
+                        )}
+                      </div>
+                    )}
+                    <div className="grid grid-col-1 w-full">
+                      {isUserMessage ? (
+                        <UserMessage content={content} />
                       ) : (
-                        <div className="i-ph:user-fill text-2xl" />
+                        <AssistantMessage content={content} annotations={message.annotations} />
                       )}
                     </div>
-                  )}
-                  <div className="grid grid-col-1 w-full">
-                    {isUserMessage ? (
-                      <UserMessage content={content} />
-                    ) : (
-                      <AssistantMessage content={content} annotations={message.annotations} />
-                    )}
-                  </div>
-                  {!isUserMessage && (
-                    <div className="flex gap-2 flex-col lg:flex-row">
-                      {messageId && (
-                        <WithTooltip tooltip="Revert to this message">
+                    {!isUserMessage && (
+                      <div className="flex gap-2 flex-col lg:flex-row">
+                        {messageId && (
+                          <WithTooltip tooltip="Revert to this message">
+                            <button
+                              onClick={() => handleRewind(messageId)}
+                              key="i-ph:arrow-u-up-left"
+                              className={classNames(
+                                'i-ph:arrow-u-up-left',
+                                'text-xl text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary transition-colors',
+                              )}
+                            />
+                          </WithTooltip>
+                        )}
+
+                        <WithTooltip tooltip="Fork chat from this message">
                           <button
-                            onClick={() => handleRewind(messageId)}
-                            key="i-ph:arrow-u-up-left"
+                            onClick={() => handleFork(messageId)}
+                            key="i-ph:git-fork"
                             className={classNames(
-                              'i-ph:arrow-u-up-left',
+                              'i-ph:git-fork',
                               'text-xl text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary transition-colors',
                             )}
                           />
                         </WithTooltip>
-                      )}
-
-                      <WithTooltip tooltip="Fork chat from this message">
-                        <button
-                          onClick={() => handleFork(messageId)}
-                          key="i-ph:git-fork"
-                          className={classNames(
-                            'i-ph:git-fork',
-                            'text-xl text-bolt-elements-textSecondary hover:text-bolt-elements-textPrimary transition-colors',
-                          )}
-                        />
-                      </WithTooltip>
+                      </div>
+                    )}
+                  </div>
+                  {showPromptComparison && (
+                    <div className="max-w-chat mx-auto w-full px-6">
+                      <PromptComparison 
+                        original={promptComparison.original} 
+                        enhanced={promptComparison.enhanced} 
+                      />
                     </div>
                   )}
-                </div>
+                </Fragment>
               );
             })
           : null}
